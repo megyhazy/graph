@@ -10,7 +10,8 @@
 #ifndef BOOST_GRAPH_GEOMETRIC_GRAPH_GENERATOR_HPP
 #define BOOST_GRAPH_GEOMETRIC_GRAPH_GENERATOR_HPP
 
-#include "boost/graph/directed_graph.hpp"
+#include <boost/functional/hash.hpp>
+#include <boost/graph/directed_graph.hpp>
 #include <boost/graph/edge_list.hpp>
 
 #include <boost/graph/graph_traits.hpp>
@@ -33,6 +34,22 @@
 
 namespace boost
 {
+
+    namespace geometric_graph_generator_detail
+    {
+        // Detection trait for boost::hash support
+        template < typename T, typename = void >
+        struct is_boost_hashable : std::false_type
+        {
+        };
+
+        template < typename T >
+        struct is_boost_hashable< T,
+            boost::void_t< decltype(hash_value(std::declval< const T& >())) > >
+        : std::true_type
+        {
+        };
+    }
 
 // connect_all_geometric
 //
@@ -62,6 +79,15 @@ void connect_all_geometric(VertexListGraph& g, const PointContainer& points,
         typename graph_traits< VertexListGraph >::edge_descriptor >));
     BOOST_CONCEPT_ASSERT((ReadablePropertyMapConcept< VertexIndexMap,
         typename graph_traits< VertexListGraph >::vertex_descriptor >));
+    // Inside connect_all_geometric:
+    using DirectedCategory =
+        typename boost::graph_traits< VertexListGraph >::directed_category;
+    BOOST_STATIC_ASSERT_MSG(
+        (!std::is_convertible< DirectedCategory, boost::directed_tag >::value),
+        "connect_all_geometric requires an undirected graph type. "
+        "Directed graphs are not supported because geometric complete graphs "
+        "require symmetric edges.");
+    BOOST_CONCEPT_ASSERT((boost::MutableGraphConcept< VertexListGraph >));
 
     // Precondition: Graph should have no edges and size of points should match
     // num_vertices(g)
@@ -119,7 +145,8 @@ void connect_all_geometric(VertexListGraph& g, const PointContainer& points,
     auto adl_distance = [](auto const &a, auto const &b){ return distance(a, b); };
     connect_all_geometric(g, points, wmap, vmap, adl_distance);
 }
-// generate_random_points
+
+// generate_unique_random_points
 //
 // Generates a set of random unique 2D points .
 // Uses unordered_set to ensure uniqueness and avoid duplicate points.
@@ -142,7 +169,7 @@ void connect_all_geometric(VertexListGraph& g, const PointContainer& points,
 // Generic version: PointType must be constructible from (CoordType, CoordType)
 template < typename PointType, typename OutputIterator, typename XDistribution,
     typename YDistribution, typename RandomEngine >
-std::size_t generate_random_points(
+std::size_t generate_unique_random_points(
     std::size_t num_points,
     XDistribution x_dist,
     YDistribution y_dist,
@@ -154,6 +181,10 @@ std::size_t generate_random_points(
     BOOST_STATIC_ASSERT_MSG(
         (std::is_same< CoordType, typename YDistribution::result_type >::value),
         "X and Y distributions must have the same result type");
+    BOOST_STATIC_ASSERT_MSG(geometric_graph_generator_detail::is_boost_hashable< PointType >::value,
+        "PointType must be hashable via boost::hash. "
+        "Provide a hash_value overload or specialize boost::hash<PointType>.");
+
 
     // This avoids the rare case in which the while loop runs indefinitely due to collisions 
     // when num_points is large and the distribution is narrow.
@@ -180,20 +211,22 @@ std::size_t generate_random_points(
 // Overload with default RNG and max_attempts parameter
 template < typename PointType, typename OutputIterator, typename XDistribution,
     typename YDistribution >
-std::size_t generate_random_points(
+std::size_t generate_unique_random_points(
     std::size_t num_points,
     XDistribution x_dist,
     YDistribution y_dist,
     OutputIterator out,
     std::size_t max_attempts = 0)
 {
-    std::mt19937 rng(std::random_device {}());
-    return generate_random_points<PointType>(num_points, x_dist, y_dist, out, rng, max_attempts);
+    std::random_device rd;
+    std::seed_seq seq { rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd() };
+    std::mt19937 rng(seq);
+    return generate_unique_random_points<PointType>(num_points, x_dist, y_dist, out, rng, max_attempts);
 }
 
 // Overload for uniform distribution, with max_attempts parameter
 template < typename PointType, typename OutputIterator, typename CoordType = double >
-std::size_t generate_random_points(
+std::size_t generate_unique_random_points(
     std::size_t num_points,
     std::size_t coordinate_max,
     OutputIterator out,
@@ -201,7 +234,7 @@ std::size_t generate_random_points(
 {
     std::uniform_real_distribution< CoordType > dist(
         static_cast< CoordType >(0), static_cast< CoordType >(coordinate_max));
-    return generate_random_points<PointType>(num_points, dist, dist, out, max_attempts);
+    return generate_unique_random_points<PointType>(num_points, dist, dist, out, max_attempts);
 }
 
 // make_random_euclidean_graph
@@ -227,12 +260,12 @@ void make_random_euclidean_graph(VertexListGraph& g, std::size_t num_points,
 {
     std::vector< simple_point< CoordType > > points;
     points.reserve(num_points);
-    generate_random_points< simple_point< CoordType > >(
+    generate_unique_random_points< simple_point< CoordType > >(
         num_points, coordinate_max, std::back_inserter(points));
     connect_all_geometric(g, points, weight_map, vertex_index_map, distance);
 }
 
-// make_random_euclidean_graph (parameterized distribution version)
+// make_random_euclidean_graph (parameterized distribution version for simple points)
 //
 // Version with custom distribution support for flexible point generation.
 template < typename VertexListGraph, typename WeightMap,
@@ -244,13 +277,13 @@ void make_random_euclidean_graph(VertexListGraph& g, std::size_t num_points,
     using CoordType = typename XDistribution::result_type;
     std::vector< simple_point< CoordType > > points;
     points.reserve(num_points);
-    generate_random_points< simple_point< CoordType > >(
+    generate_unique_random_points< simple_point< CoordType > >(
         num_points, x_dist, y_dist, std::back_inserter(points));
     connect_all_geometric(g, points, weight_map, vertex_index_map, distance);
 }
 
 
-// make_random_geometric_graph (parameterized distribution version)
+// make_random_geometric_graph (parameterized for custom points)
 //
 // Creates a complete graph with random points of arbitrary PointType and geometric distance weights.
 // This function allows the user to specify the point type and random distributions for each coordinate.
@@ -261,7 +294,8 @@ void make_random_euclidean_graph(VertexListGraph& g, std::size_t num_points,
 //   x_dist, y_dist - Distributions for x and y coordinates
 //   weight_map - Property map for storing edge weights
 //   vertex_index_map - Property map for vertex indices
-//
+//   distance - Binary function to compute distance between two points (e.g.,
+//   boost::geometry::distance)
 // Postconditions: g is a complete graph with geometric distance weights
 // Complexity: O(V^2) where V is the number of vertices
 template < typename PointType, typename VertexListGraph, typename WeightMap,
@@ -272,7 +306,7 @@ void make_random_geometric_graph(VertexListGraph& g, std::size_t num_points,
 {
     std::vector< PointType > points;
     points.reserve(num_points);
-    generate_random_points<PointType>(num_points, x_dist, y_dist, std::back_inserter(points));
+    generate_unique_random_points<PointType>(num_points, x_dist, y_dist, std::back_inserter(points));
     connect_all_geometric(g, points, weight_map, vertex_index_map, distance);
 }
 
@@ -299,7 +333,7 @@ void make_random_geometric_graph(VertexListGraph& g, std::size_t num_points,
 {
     std::vector< PointType > points;
     points.reserve(num_points);
-    generate_random_points<PointType>(num_points, coordinate_max, std::back_inserter(points));
+    generate_unique_random_points<PointType>(num_points, coordinate_max, std::back_inserter(points));
     connect_all_geometric(g, points, weight_map, vertex_index_map);
 }
 

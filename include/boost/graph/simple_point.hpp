@@ -21,11 +21,21 @@ template < typename T > struct simple_point
     T x;
     T y;
 
-    // Euclidean distance between two simple_point<T> using std::hypot
-    constexpr friend
-    T distance(const simple_point& a, const simple_point& b)
+    // Deduce return type: float for float, double for double/ints, long double
+    // for long double, to avoid silent and dangerous truncation of floating to int in distance
+    using distance_type =
+        typename std::conditional< std::is_same< T, long double >::value,
+            long double,
+            typename std::conditional< std::is_same< T, float >::value, float,
+                double >::type >::type;
+
+    constexpr friend distance_type distance(
+        const simple_point& a, const simple_point& b)
     {
-        return std::hypot(a.x - b.x, a.y - b.y);
+        return std::hypot(static_cast< distance_type >(a.x)
+                - static_cast< distance_type >(b.x),
+            static_cast< distance_type >(a.y)
+                - static_cast< distance_type >(b.y));
     }
 
     constexpr friend
@@ -45,8 +55,12 @@ template < typename T > struct simple_point
     {
         std::size_t seed = 0;
 
-        boost::hash_combine(seed, p.x);
-        boost::hash_combine(seed, p.y);
+        // Normalize zero values to avoid -0.0 and +0.0 hash collisions
+        T x_norm = p.x == T(0) ? T(0) : p.x;
+        T y_norm = p.y == T(0) ? T(0) : p.y;
+
+        boost::hash_combine(seed, x_norm);
+        boost::hash_combine(seed, y_norm);
 
         return seed;
     }

@@ -70,7 +70,7 @@ struct RandomGraphFixture
 
     RandomGraphFixture() : g(num_vertices)
     {
-        boost::generate_random_points< PointDbl >(
+        boost::generate_unique_random_points< PointDbl >(
             num_vertices, 100, std::back_inserter(points));
         boost::connect_all_geometric(g, points,
             boost::get(boost::edge_weight, g),
@@ -101,12 +101,19 @@ struct KnownPointsFixture
 using MatrixKnownPointsFixture
     = KnownPointsFixture< UndirectedMatrixGraph, PointDbl >;
 
-auto adl_distance = [](auto const &a, auto const &b){ return distance(a, b); };
+struct adl_distance_fn
+{
+    template < typename A, typename B >
+    auto operator()(const A& a, const B& b) const -> decltype(distance(a, b))
+    {
+        return distance(a, b);
+    }
+};
 
 } // anonymous namespace
 
 //=======================================================================
-// Test Suite: generate_random_points
+// Test Suite: generate_unique_random_points
 //=======================================================================
 
 BOOST_AUTO_TEST_SUITE(generate_random_points_tests)
@@ -116,7 +123,7 @@ BOOST_AUTO_TEST_CASE(test_uniqueness)
     const std::size_t num_points = 100;
     std::vector< PointDbl > points;
 
-    boost::generate_random_points< PointDbl >(
+    boost::generate_unique_random_points< PointDbl >(
         num_points, 10000, std::back_inserter(points));
 
     using Pair = std::pair< double, double >;
@@ -136,7 +143,7 @@ BOOST_AUTO_TEST_CASE(test_custom_distributions)
     std::uniform_real_distribution< double > x_dist(0.0, 100.0);
     std::uniform_real_distribution< double > y_dist(0.0, 200.0);
 
-    std::size_t generated = boost::generate_random_points< PointDbl >(
+    std::size_t generated = boost::generate_unique_random_points< PointDbl >(
         num_points, x_dist, y_dist, std::back_inserter(points));
 
     BOOST_TEST(generated == num_points);
@@ -159,7 +166,7 @@ BOOST_AUTO_TEST_CASE(test_max_attempts)
     std::vector< boost::simple_point< int > > points;
 
     std::size_t generated
-        = boost::generate_random_points < boost::simple_point< int > >(num_points,
+        = boost::generate_unique_random_points < boost::simple_point< int > >(num_points,
         narrow_dist, narrow_dist, std::back_inserter(points), rng, 200);
 
     BOOST_TEST(generated < num_points);
@@ -170,7 +177,7 @@ BOOST_AUTO_TEST_CASE(test_empty)
 {
     std::vector< PointDbl > points;
     std::size_t generated
-        = boost::generate_random_points< PointDbl >(0, 100, std::back_inserter(points));
+        = boost::generate_unique_random_points< PointDbl >(0, 100, std::back_inserter(points));
 
     BOOST_TEST(generated == 0u);
     BOOST_TEST(points.empty());
@@ -178,6 +185,9 @@ BOOST_AUTO_TEST_CASE(test_empty)
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// Not perfectly elegant but enables boost::geometry points to work with boost::connect_all_geometric and
+// boost::make_random_euclidean_graph, and does not require linking against
+// boost::geometry library
 namespace boost {
 namespace geometry {
     namespace model {
@@ -188,8 +198,12 @@ std::size_t hash_value(point_xy<Float> const &p)
 {
     std::size_t seed = 0;
 
-    boost::hash_combine(seed, p.x());
-    boost::hash_combine(seed, p.y());
+    // Normalize zero values to avoid -0.0 and +0.0 hash collisions
+    Float x_norm = p.x() == Float(0) ? Float(0) : p.x();
+    Float y_norm = p.y() == Float(0) ? Float(0) : p.y();
+
+    boost::hash_combine(seed, x_norm);
+    boost::hash_combine(seed, y_norm);
 
     return seed;
 }
@@ -203,12 +217,15 @@ bool operator==(point_xy<Float> const &a, point_xy<Float> const &b)
 
 }}}}
 
-auto geom_distance = [](boost::geometry::model::d2::point_xy<double> const &a,
-                    boost::geometry::model::d2::point_xy<double> const &b)
+struct geom_distance_fn
 {
-    return boost::geometry::distance(a, b);
+    template < typename P1, typename P2 >
+    auto operator()(const P1& a, const P2& b) const
+        -> decltype(boost::geometry::distance(a, b))
+    {
+        return boost::geometry::distance(a, b);
+    }
 };
-
 
 BOOST_AUTO_TEST_CASE(test_boost_geometry_point_compatibility)
 {
@@ -224,7 +241,8 @@ BOOST_AUTO_TEST_CASE(test_boost_geometry_point_compatibility)
     auto weight_map = boost::get(boost::edge_weight, g);
     auto vertex_index_map = boost::get(boost::vertex_index, g);
 
-    boost::connect_all_geometric(g, points, weight_map, vertex_index_map, geom_distance);
+    boost::connect_all_geometric(
+        g, points, weight_map, vertex_index_map, geom_distance_fn { });
 
     // Check edge weights using Boost.Geometry distance
     auto e01 = boost::edge(0, 1, g);
@@ -310,7 +328,7 @@ BOOST_AUTO_TEST_CASE(test_with_distributions_matrix)
 
     boost::make_random_euclidean_graph(g, num_vertices, x_dist, y_dist,
         boost::get(boost::edge_weight, g), boost::get(boost::vertex_index, g),
-        adl_distance);
+        adl_distance_fn {});
 
     BOOST_TEST(is_complete_graph(g));
 }
@@ -329,7 +347,7 @@ BOOST_AUTO_TEST_CASE(test_float_generation_and_math)
     std::vector< boost::simple_point< float > > points;
     std::uniform_real_distribution< float > dist(0.0f, 100.0f);
 
-    std::size_t generated = boost::generate_random_points< boost::simple_point< float > >(
+    std::size_t generated = boost::generate_unique_random_points< boost::simple_point< float > >(
         num_points, dist, dist, std::back_inserter(points));
 
     BOOST_TEST(generated == num_points);
@@ -426,19 +444,22 @@ BOOST_AUTO_TEST_CASE(test_with_uniform_distribution_simple_point)
     BOOST_TEST(is_complete_graph(g));
 }
 
-// BOOST_AUTO_TEST_CASE(test_with_uniform_distribution_boost_geometry_point)
-// {
-//     using Graph = UndirectedMatrixGraph;
-//     using Point = boost::geometry::model::d2::point_xy<double>;
-//     const std::size_t num_vertices = 12;
-//     const std::size_t coordinate_max = 500;
-//     Graph g(num_vertices);
-//     boost::make_random_geometric_graph< Point >(
-//         g, num_vertices, coordinate_max,
-//         boost::get(boost::edge_weight, g),
-//         boost::get(boost::vertex_index, g), geom_distance);
-//     BOOST_TEST(is_complete_graph(g));
-// }
+ /* Note:  This fails due to ADL issues with boost::geometry::distance and the
+point_xy type.
+ BOOST_AUTO_TEST_CASE(test_with_uniform_distribution_boost_geometry_point)
+ {
+     using Graph = UndirectedMatrixGraph;
+     using Point = boost::geometry::model::d2::point_xy<double>;
+     const std::size_t num_vertices = 12;
+     const std::size_t coordinate_max = 500;
+     Graph g(num_vertices);
+     boost::make_random_geometric_graph< Point >(
+         g, num_vertices, coordinate_max,
+         boost::get(boost::edge_weight, g),
+         boost::get(boost::vertex_index, g));
+     BOOST_TEST(is_complete_graph(g)); 
+}
+*/
 
 BOOST_AUTO_TEST_CASE(test_with_custom_distribution_boost_geometry_point)
 {
@@ -450,8 +471,8 @@ BOOST_AUTO_TEST_CASE(test_with_custom_distribution_boost_geometry_point)
     Graph g(num_vertices);
     boost::make_random_geometric_graph< Point >(
         g, num_vertices, x_dist, y_dist,
-        boost::get(boost::edge_weight, g),
-        boost::get(boost::vertex_index, g), geom_distance);
+        boost::get(boost::edge_weight, g), boost::get(boost::vertex_index, g),
+        geom_distance_fn { });
     BOOST_TEST(is_complete_graph(g));
 }
 
